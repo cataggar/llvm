@@ -24,7 +24,7 @@ env:
   LLVM_PROJECTS: "lld;clang"
   CMAKE_BUILD_TYPE: Release
   GHR_VERSION: "v0.5.1"
-  ZIG_SPEC: "cataggar/zig@v0.17.0-dev.704+b8cb78023"
+  ZIG_SPEC: "cataggar/zig@v0.17.0"
   ZIG_MINISIGN: "RWSGOq2NVecA2UPNdBUZykf1CCb147pkmdtYxgb3Ti+JO/wCYvhbAb/U"
 
 jobs:
