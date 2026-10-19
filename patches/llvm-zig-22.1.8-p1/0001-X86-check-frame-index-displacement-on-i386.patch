@@ -1,0 +1,84 @@
+From ec95e723ffc3faa41017d87e292480eb20c983aa Mon Sep 17 00:00:00 2001
+From: Cameron Taggart <cataggar@outlook.com>
+Date: Mon, 19 Oct 2026 03:33:53 +0000
+Subject: [PATCH] [X86] Check frame-index displacement on i386
+
+When matching a FrameIndex into an X86ISelAddressMode after a displacement has
+already been matched, require isDispSafeForFrameIndexOrRegBase(AM.Disp) in
+both 32-bit and 64-bit modes so resolving the frame index cannot overflow a
+signed 32-bit displacement during eliminateFrameIndex.
+
+Upstream-Issue: https://github.com/llvm/llvm-project/issues/232101
+Tracking-Issue: #12
+Assisted-by: GitHub Copilot
+Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>
+---
+ llvm/lib/Target/X86/X86ISelDAGToDAG.cpp       |  2 +-
+ .../X86/frame-index-large-displacement.ll     | 42 +++++++++++++++++++
+ 2 files changed, 43 insertions(+), 1 deletion(-)
+ create mode 100644 llvm/test/CodeGen/X86/frame-index-large-displacement.ll
+
+diff --git a/llvm/lib/Target/X86/X86ISelDAGToDAG.cpp b/llvm/lib/Target/X86/X86ISelDAGToDAG.cpp
+index ab608806e5dc..a093da6311d3 100644
+--- a/llvm/lib/Target/X86/X86ISelDAGToDAG.cpp
++++ b/llvm/lib/Target/X86/X86ISelDAGToDAG.cpp
+@@ -2555,7 +2555,7 @@ bool X86DAGToDAGISel::matchAddressRecursively(SDValue N, X86ISelAddressMode &AM,
+   case ISD::FrameIndex:
+     if (AM.BaseType == X86ISelAddressMode::RegBase &&
+         AM.Base_Reg.getNode() == nullptr &&
+-        (!Subtarget->is64Bit() || isDispSafeForFrameIndexOrRegBase(AM.Disp))) {
++        isDispSafeForFrameIndexOrRegBase(AM.Disp)) {
+       AM.BaseType = X86ISelAddressMode::FrameIndexBase;
+       AM.Base_FrameIndex = cast<FrameIndexSDNode>(N)->getIndex();
+       return false;
+diff --git a/llvm/test/CodeGen/X86/frame-index-large-displacement.ll b/llvm/test/CodeGen/X86/frame-index-large-displacement.ll
+new file mode 100644
+index 000000000000..d164348c7a05
+--- /dev/null
++++ b/llvm/test/CodeGen/X86/frame-index-large-displacement.ll
+@@ -0,0 +1,42 @@
++; RUN: llc < %s -mtriple=i386-unknown-linux -relocation-model=pic -frame-pointer=all -verify-machineinstrs | FileCheck %s --check-prefix=X86
++; RUN: llc < %s -mtriple=i386-unknown-linux -relocation-model=pic -frame-pointer=none -verify-machineinstrs | FileCheck %s --check-prefix=X86
++; RUN: llc < %s -mtriple=x86_64-unknown-linux -relocation-model=pic -frame-pointer=all -verify-machineinstrs | FileCheck %s --check-prefix=X64
++; RUN: llc < %s -mtriple=x86_64-unknown-linux -relocation-model=pic -frame-pointer=none -verify-machineinstrs | FileCheck %s --check-prefix=X64
++
++; A large displacement must not be folded into a frame index, even when the
++; displacement is matched before the frame index. Resolving the frame index
++; would then overflow the signed 32-bit displacement. On i386, these GEPs can
++; describe an access within the small stack object: the variable index cancels
++; the constant offset using the target's 32-bit address arithmetic.
++
++declare void @initialize(ptr)
++
++define i32 @negative_displacement(i32 %index) {
++; X86-LABEL: negative_displacement:
++; X86:       movl {{.*}}-2147483648(
++; X86:       retl
++; X64-LABEL: negative_displacement:
++; X64:       movl {{.*}}-2147483648(
++; X64:       retq
++  %stack = alloca [16 x i32], align 16
++  call void @initialize(ptr %stack)
++  %base = getelementptr i32, ptr %stack, i32 %index
++  %address = getelementptr i8, ptr %base, i32 -2147483648
++  %value = load i32, ptr %address, align 4
++  ret i32 %value
++}
++
++define i32 @positive_displacement(i32 %index) {
++; X86-LABEL: positive_displacement:
++; X86:       movl {{.*}}2147483647(
++; X86:       retl
++; X64-LABEL: positive_displacement:
++; X64:       movl {{.*}}2147483647(
++; X64:       retq
++  %stack = alloca [16 x i32], align 16
++  call void @initialize(ptr %stack)
++  %base = getelementptr i8, ptr %stack, i32 %index
++  %address = getelementptr i8, ptr %base, i32 2147483647
++  %value = load i32, ptr %address, align 4
++  ret i32 %value
++}
+-- 
+2.53.0
+

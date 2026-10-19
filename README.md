@@ -17,7 +17,11 @@ Zig-oriented prebuilt LLVM toolchains.
 - **`.github/workflows/build-zig-llvm.yml`** — builds the Zig-oriented prebuilt
   LLVM toolchains (`llvm-zig-<version>-<target>`). The workflow checks out
   `llvm/llvm-project` at the requested `llvmorg-*` upstream tag and builds it.
-  Releases are tagged `llvm-zig-<version>`. See cataggar/llvm-project#4.
+  Releases are tagged `llvm-zig-<version>` (or `llvm-zig-<version>-p<N>` for
+  patched releases). See cataggar/llvm-project#4 and cataggar/llvm-project#13.
+- **`patches/<release-tag>/NNNN-*.patch`** — optional patches applied in
+  lexicographical order (`git apply --check` then `git apply`) after checking
+  out `llvmorg-<version>`.
 - **`.github/copilot-instructions.md`** — repository instructions for GitHub
   Copilot.
 
@@ -63,14 +67,32 @@ It is staged from the same LLVM install tree, without a second compilation.
 
 Trigger from the GitHub Actions UI (`workflow_dispatch`) on the `mirror` branch:
 
-- **tag**: `llvm-zig-22.1.2` — the release tag. The LLVM source is checked out
-  from the matching `llvmorg-<version>` upstream tag.
+- **tag**: `llvm-zig-22.1.2` or `llvm-zig-22.1.8-p1` — the release tag. The
+  LLVM source is checked out from the matching `llvmorg-<version>` upstream
+  tag (stripping any `-p<N>` patch suffix), while asset names retain the full
+  `<version>-p<N>` string (e.g. `llvm-zig-22.1.8-p1-<target>`).
 - **target**: leave empty for all, or one target to rebuild just that one
 - **tools_only**: default false. Set true with an explicit `x86_64-linux` or
   `aarch64-linux` target to add only a new tools archive to an existing release.
   This uses the same build recipe and stages tools before pruning, but skips
   full-distribution archive creation and upload. It fails if the tools asset
   already exists and never replaces existing assets.
+
+### Patched releases (`llvm-zig-<version>-p<N>`)
+
+Store patches on `mirror` under `patches/<release-tag>/NNNN-*.patch` (for
+example, `patches/llvm-zig-22.1.8-p1/0001-X86-check-frame-index-displacement-on-i386.patch`).
+During the build:
+
+1. `llvm/llvm-project` is checked out at `llvmorg-<version>`.
+2. Every `patches/<release-tag>/NNNN-*.patch` file is verified with
+   `git apply --check` and applied in order with `git apply`. A `-p<N>` tag
+   with no matching patches, or any patch that does not apply cleanly, fails
+   the job.
+3. Patched releases never `--clobber` existing release assets — changing the
+   patch set or rebuilding an already-uploaded target requires bumping `-p<N>`.
+4. Release notes record the upstream `llvmorg-<version>` tag and commit SHA,
+   plus each applied patch's file name, SHA-256, and tracking issue.
 
 For example, backfill the ARM64 Linux tools archive without replacing any
 existing 22.1.8 assets:
