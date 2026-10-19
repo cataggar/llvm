@@ -2714,7 +2714,7 @@ bool X86DAGToDAGISel::matchAddressRecursively(SDValue N, X86ISelAddressMode &AM,
   case ISD::FrameIndex:
     if (AM.BaseType == X86ISelAddressMode::RegBase &&
         AM.Base_Reg.getNode() == nullptr &&
-        (!Subtarget->is64Bit() || isDispSafeForFrameIndexOrRegBase(AM.Disp))) {
+        isDispSafeForFrameIndexOrRegBase(AM.Disp)) {
       AM.BaseType = X86ISelAddressMode::FrameIndexBase;
       AM.Base_FrameIndex = cast<FrameIndexSDNode>(N)->getIndex();
       return false;
