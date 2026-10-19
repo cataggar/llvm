@@ -47,6 +47,11 @@ jobs:
           - os: macos-15
             target: aarch64-macos
             archive: tar.xz
+          - os: macos-15
+            target: x86_64-macos
+            archive: tar.xz
+            zig-target: x86_64-macos
+            cmake-extra: "-DCMAKE_OSX_ARCHITECTURES=x86_64 -DCMAKE_SYSTEM_NAME=Darwin -DCMAKE_SYSTEM_PROCESSOR=x86_64"
 
     runs-on: ${{ matrix.os }}
 
@@ -252,7 +257,13 @@ jobs:
         run: |
           mkdir -p "${{ github.workspace }}/zigwrap"
           ZIG_TARGET="${{ matrix.zig-target }}"
-          if [ -n "$ZIG_TARGET" ]; then
+          if [ -n "$ZIG_TARGET" ] && [ "${{ runner.os }}" = "macOS" ]; then
+            SDKROOT="$(xcrun --sdk macosx --show-sdk-path)"
+            printf '#!/bin/sh\nexec "%s" cc -target %s -iframework "%s/System/Library/Frameworks" -F"%s/System/Library/Frameworks" -L"%s/usr/lib" "$@"\n' \
+              "$ZIG" "$ZIG_TARGET" "$SDKROOT" "$SDKROOT" "$SDKROOT" > "${{ github.workspace }}/zigwrap/zigcc"
+            printf '#!/bin/sh\nexec "%s" c++ -target %s -iframework "%s/System/Library/Frameworks" -F"%s/System/Library/Frameworks" -L"%s/usr/lib" "$@"\n' \
+              "$ZIG" "$ZIG_TARGET" "$SDKROOT" "$SDKROOT" "$SDKROOT" > "${{ github.workspace }}/zigwrap/zigcxx"
+          elif [ -n "$ZIG_TARGET" ]; then
             printf '#!/bin/sh\nexec "%s" cc -target %s "$@"\n' "$ZIG" "$ZIG_TARGET" > "${{ github.workspace }}/zigwrap/zigcc"
             printf '#!/bin/sh\nexec "%s" c++ -target %s "$@"\n' "$ZIG" "$ZIG_TARGET" > "${{ github.workspace }}/zigwrap/zigcxx"
           else
