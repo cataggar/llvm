@@ -70,7 +70,7 @@ jobs:
                 exit 1
                 ;;
             esac
-            if [[ ! "${RELEASE_TAG}" =~ ^(llvm-zig-|llvmorg-)[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            if [[ ! "${RELEASE_TAG}" =~ ^(llvm-zig-|llvmorg-)[0-9]+\.[0-9]+\.[0-9]+(-p[0-9]+)?$ ]]; then
               echo "tools_only requires a versioned llvm-zig-* or llvmorg-* release tag"
               exit 1
             fi
@@ -90,13 +90,16 @@ jobs:
           else
             TAG="${GITHUB_REF_NAME}"
           fi
-          # Release tag may be either llvm-zig-<version> or llvmorg-<version>;
-          # the LLVM source is always checked out from llvmorg-<version>.
+          # Release tag may be llvm-zig-<version>, llvm-zig-<version>-p<N>, or
+          # llvmorg-<version>; the LLVM source is checked out from
+          # llvmorg-<base_version>.
           VERSION="${TAG#llvm-zig-}"
           VERSION="${VERSION#llvmorg-}"
+          BASE_VERSION="${VERSION%-p[0-9]*}"
           echo "release_tag=${TAG}" >> "$GITHUB_OUTPUT"
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
-          echo "llvm_ref=llvmorg-${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "base_version=${BASE_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "llvm_ref=llvmorg-${BASE_VERSION}" >> "$GITHUB_OUTPUT"
 
       - name: Checkout LLVM
         if: steps.filter.outputs.skip != 'true'
@@ -104,6 +107,42 @@ jobs:
         with:
           repository: llvm/llvm-project
           ref: ${{ steps.ref.outputs.llvm_ref }}
+
+      - name: Checkout patches
+        if: steps.filter.outputs.skip != 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository }}
+          ref: ${{ github.sha }}
+          path: .mirror-patches
+          sparse-checkout: patches
+          clean: false
+
+      - name: Apply patches
+        if: steps.filter.outputs.skip != 'true'
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ steps.ref.outputs.release_tag }}
+        run: |
+          shopt -s nullglob
+          PATCH_DIR=".mirror-patches/patches/${RELEASE_TAG}"
+          patches=("${PATCH_DIR}"/[0-9][0-9][0-9][0-9]-*.patch)
+          if [[ "${RELEASE_TAG}" =~ -p[0-9]+$ ]] && [ "${#patches[@]}" -eq 0 ]; then
+            echo "ERROR: ${RELEASE_TAG} is a patched release tag, but no patches were found in patches/${RELEASE_TAG}/"
+            exit 1
+          fi
+          for patch in "${patches[@]}"; do
+            name="$(basename "${patch}")"
+            if command -v sha256sum >/dev/null 2>&1; then
+              sha="$(sha256sum "${patch}" | cut -d' ' -f1)"
+            else
+              sha="$(shasum -a 256 "${patch}" | cut -d' ' -f1)"
+            fi
+            echo "Applying ${name} (sha256:${sha})"
+            git apply --check "${patch}"
+            git apply "${patch}"
+          done
+          rm -rf .mirror-patches
 
       - name: Drop clang Info.plist -sectcreate (macOS)
         if: steps.filter.outputs.skip != 'true' && runner.os == 'macOS'
@@ -584,7 +623,7 @@ jobs:
             -v "${VALIDATION_DIR}:/work" \
             -w /work \
             -e "TOOLS_ROOT=/work/${TOOLS_NAME}" \
-            -e "LLVM_VERSION=${{ steps.ref.outputs.version }}" \
+            -e "LLVM_VERSION=${{ steps.ref.outputs.base_version }}" \
             -e "EXPECTED_ARCH=${{ startsWith(matrix.target, 'aarch64-') && 'aarch64' || 'x86_64' }}" \
             ubuntu:24.04 \
             bash verify-tools.sh
@@ -641,6 +680,11 @@ jobs:
     permissions:
       contents: write
     steps:
+      - name: Checkout mirror metadata
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: patches
+
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
@@ -662,8 +706,11 @@ jobs:
           fi
           VERSION="${TAG#llvm-zig-}"
           VERSION="${VERSION#llvmorg-}"
+          BASE_VERSION="${VERSION%-p[0-9]*}"
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "base_version=${BASE_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "llvm_ref=llvmorg-${BASE_VERSION}" >> "$GITHUB_OUTPUT"
 
       - name: Create or update GitHub Release
         if: ${{ !inputs.tools_only }}
@@ -672,6 +719,8 @@ jobs:
         run: |
           TAG="${{ steps.version.outputs.tag }}"
           VERSION="${{ steps.version.outputs.version }}"
+          BASE_VERSION="${{ steps.version.outputs.base_version }}"
+          UPSTREAM_TAG="${{ steps.version.outputs.llvm_ref }}"
 
           # Only upload if there are assets (skipped builds produce none)
           if [ -z "$(ls -A dist/ 2>/dev/null)" ]; then
@@ -679,22 +728,72 @@ jobs:
             exit 0
           fi
 
+          LS_REMOTE="$(git ls-remote https://github.com/llvm/llvm-project.git "refs/tags/${UPSTREAM_TAG}^{}" "refs/tags/${UPSTREAM_TAG}")"
+          UPSTREAM_SHA="$(awk '/\^\{\}$/ { print $1; exit }' <<< "${LS_REMOTE}")"
+          if [ -z "${UPSTREAM_SHA}" ]; then
+            UPSTREAM_SHA="$(awk 'NR==1 { print $1; exit }' <<< "${LS_REMOTE}")"
+          fi
+          if [ -z "${UPSTREAM_SHA}" ]; then
+            echo "ERROR: failed to resolve upstream tag ${UPSTREAM_TAG}"
+            exit 1
+          fi
+
           NOTES="LLVM ${VERSION} prebuilt for Zig compilation, now also shipping the Clang/LLD toolchain binaries (for Bun / buz). Projects: clang, lld. Static CRT (Windows: /MT). No zlib, zstd, libxml2, terminfo dependencies.
 
           Zig (static libs): \`zig build -Dstatic-llvm --search-prefix <extracted-dir>\`
           CMake: \`cmake -DCMAKE_PREFIX_PATH=<extracted-dir> ..\`
           Toolchain (Bun): point the toolchain search at \`<extracted-dir>/bin\` (clang, clang++, llvm-ar, llvm-ranlib, ld.lld, …).
-          LLVM tools (Linux): the \`llvm-tools-${VERSION}-<target>.tar.xz\` assets for x86_64-linux and aarch64-linux contain llvm-nm, llvm-objcopy, llvm-objdump, llvm-readelf, and llvm-strip."
+          LLVM tools (Linux): the \`llvm-tools-${VERSION}-<target>.tar.xz\` assets for x86_64-linux and aarch64-linux contain llvm-nm, llvm-objcopy, llvm-objdump, llvm-readelf, and llvm-strip.
+
+          Upstream source: \`${UPSTREAM_TAG}\` (\`${UPSTREAM_SHA}\`)"
+
+          shopt -s nullglob
+          patches=("patches/${TAG}"/[0-9][0-9][0-9][0-9]-*.patch)
+          if [[ "${TAG}" =~ -p[0-9]+$ ]] && [ "${#patches[@]}" -eq 0 ]; then
+            echo "ERROR: ${TAG} is a patched release tag, but no patches were found in patches/${TAG}/"
+            exit 1
+          fi
+          if [ "${#patches[@]}" -gt 0 ]; then
+            PATCH_LINES="Patches applied:"
+            for patch in "${patches[@]}"; do
+              name="$(basename "${patch}")"
+              sha="$(sha256sum "${patch}" | cut -d' ' -f1)"
+              issue="$(sed -nE 's/^[Tt]racking[- ][Ii]ssue:[[:space:]]*(#[0-9]+|https:\/\/[^[:space:]]+).*/\1/p' "${patch}" | head -n1)"
+              if [ -z "${issue}" ]; then
+                issue="$(grep -oE '#[0-9]+' "${patch}" | head -n1 || true)"
+              fi
+              if [ -n "${issue}" ]; then
+                PATCH_LINES="${PATCH_LINES}"$'\n'"- \`${name}\` (\`sha256:${sha}\`, tracking issue: ${issue})"
+              else
+                PATCH_LINES="${PATCH_LINES}"$'\n'"- \`${name}\` (\`sha256:${sha}\`)"
+              fi
+            done
+            NOTES="${NOTES}"$'\n\n'"${PATCH_LINES}"
+          fi
 
           # Create release if it doesn't exist, or upload to existing.
-          # --clobber replaces assets with matching names but never deletes
-          # assets from other builds (e.g. skipped targets).
+          # Never --clobber a patched release; changing the patch set requires bumping -p<N>.
           if gh release view "${TAG}" --repo "${{ github.repository }}" &>/dev/null; then
-            echo "Release ${TAG} exists — uploading new/updated assets only"
-            gh release upload "${TAG}" \
-              --repo "${{ github.repository }}" \
-              --clobber \
-              dist/*
+            if [[ "${TAG}" =~ -p[0-9]+$ ]]; then
+              EXISTING_ASSETS="$(gh release view "${TAG}" --repo "${{ github.repository }}" --json assets --jq '.assets[].name')"
+              for path in dist/*; do
+                asset="$(basename "${path}")"
+                if grep -Fxq "${asset}" <<< "${EXISTING_ASSETS}"; then
+                  echo "Refusing to clobber existing asset on patched release ${TAG}: ${asset}; bump -p<N> instead"
+                  exit 1
+                fi
+              done
+              echo "Patched release ${TAG} exists — uploading new assets without clobber"
+              gh release upload "${TAG}" \
+                --repo "${{ github.repository }}" \
+                dist/*
+            else
+              echo "Release ${TAG} exists — uploading new/updated assets only"
+              gh release upload "${TAG}" \
+                --repo "${{ github.repository }}" \
+                --clobber \
+                dist/*
+            fi
             if compgen -G "dist/llvm-tools-*" >/dev/null; then
               gh release edit "${TAG}" \
                 --repo "${{ github.repository }}" \
@@ -789,7 +888,8 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
           RELEASE_TAG: ${{ steps.version.outputs.tag }}
-          LLVM_VERSION: ${{ steps.version.outputs.version }}
+          ASSET_VERSION: ${{ steps.version.outputs.version }}
+          LLVM_VERSION: ${{ steps.version.outputs.base_version }}
           TARGET: ${{ inputs.target }}
           EXPECTED_ARCH: ${{ startsWith(inputs.target, 'aarch64-') && 'aarch64' || 'x86_64' }}
           TOOLS_ROOT: ${{ runner.temp }}/llvm-tools-consumer
@@ -799,7 +899,7 @@ jobs:
         run: |
           curl -fsSL "https://raw.githubusercontent.com/cataggar/ghr/${GHR_VERSION}/install.sh" \
             | GHR_NO_PATH_ADD=1 sh
-          ASSET="llvm-tools-${LLVM_VERSION}-${TARGET}.tar.xz"
+          ASSET="llvm-tools-${ASSET_VERSION}-${TARGET}.tar.xz"
           "${GHR_BIN_DIR}/ghr" install "${GH_REPO}/${ASSET}@${RELEASE_TAG}"
           for tool in llvm-nm llvm-objcopy llvm-objdump llvm-readelf llvm-strip; do
             resolved="$(readlink -e "${GHR_BIN_DIR}/${tool}")"
