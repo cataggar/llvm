@@ -52,6 +52,53 @@ jobs:
             archive: tar.xz
             zig-target: x86_64-macos
             cmake-extra: "-DCMAKE_OSX_ARCHITECTURES=x86_64 -DCMAKE_SYSTEM_NAME=Darwin -DCMAKE_SYSTEM_PROCESSOR=x86_64"
+          - os: ubuntu-24.04
+            target: wasm64-wasi
+            archive: tar.xz
+            zig-target: wasm64-wasi
+            cmake-extra: >-
+              -DCMAKE_SYSTEM_NAME=WASI
+              -DCMAKE_SYSTEM_PROCESSOR=wasm64
+              -DWASI=1
+              -DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY
+              -DCMAKE_AR=${{ github.workspace }}/zigwrap/zigar
+              -DCMAKE_RANLIB=${{ github.workspace }}/zigwrap/zigranlib
+              -DLLVM_HOST_TRIPLE=wasm64-unknown-wasi
+              -DLLVM_DEFAULT_TARGET_TRIPLE=wasm64-unknown-wasi
+              -DLLVM_ENABLE_PIC=OFF
+              -DLLVM_ENABLE_THREADS=OFF
+              -DLLVM_ENABLE_BACKTRACES=OFF
+              -DLLVM_ENABLE_CRASH_OVERRIDES=OFF
+              -DLLVM_BUILD_TOOLS=OFF
+              -DLLVM_BUILD_UTILS=OFF
+              -DCLANG_BUILD_TOOLS=OFF
+              -DLLD_BUILD_TOOLS=OFF
+              -DHAVE_LIBPTHREAD=0
+              -DPTHREAD_IN_LIBC=0
+              -DHAVE_PTHREAD_H=0
+              -DHAVE_PTHREAD_GETNAME_NP=0
+              -DHAVE_PTHREAD_SETNAME_NP=0
+              -DHAVE_LIBDL=0
+              -DHAVE_DLFCN_H=0
+              -DHAVE_DLOPEN=0
+              -DHAVE_LIBRT=0
+              -DHAVE_REGISTER_FRAME=0
+              -DHAVE_DEREGISTER_FRAME=0
+              -DHAVE_UNW_ADD_DYNAMIC_FDE=0
+              -DHAVE__UNWIND_BACKTRACE=0
+              -DHAVE_BACKTRACE=0
+              -DHAVE_SETJMP=0
+              -DHAVE_TERMIOS_H=0
+              -DHAVE_SYS_IOCTL_H=0
+              -DHAVE_POSIX_SPAWN=0
+              -DHAVE_FUTIMES=0
+              -DHAVE_GETRUSAGE=0
+              -DHAVE_SBRK=0
+              -DHAVE_MALLINFO=0
+              -DHAVE_MALLINFO2=0
+              -DCLANG_HAVE_RLIMITS=0
+              -DCLANG_HAVE_DLFCN_H=0
+              -DCLANG_HAVE_DLADDR=0
 
     runs-on: ${{ matrix.os }}
 
@@ -120,7 +167,9 @@ jobs:
           repository: ${{ github.repository }}
           ref: ${{ github.sha }}
           path: .mirror-patches
-          sparse-checkout: patches
+          sparse-checkout: |
+            patches
+            .github/wasi-llvm.patch
           clean: false
 
       - name: Apply patches
@@ -147,6 +196,11 @@ jobs:
             git apply --check "${patch}"
             git apply "${patch}"
           done
+          if [ "${{ matrix.target }}" = "wasm64-wasi" ]; then
+            echo "Applying WASI LLVM patch (.github/wasi-llvm.patch)"
+            git apply --check ".mirror-patches/.github/wasi-llvm.patch"
+            git apply ".mirror-patches/.github/wasi-llvm.patch"
+          fi
           rm -rf .mirror-patches
 
       - name: Drop clang Info.plist -sectcreate (macOS)
@@ -263,6 +317,34 @@ jobs:
               "$ZIG" "$ZIG_TARGET" "$SDKROOT" "$SDKROOT" "$SDKROOT" > "${{ github.workspace }}/zigwrap/zigcc"
             printf '#!/bin/sh\nexec "%s" c++ -target %s -iframework "%s/System/Library/Frameworks" -F"%s/System/Library/Frameworks" -L"%s/usr/lib" "$@"\n' \
               "$ZIG" "$ZIG_TARGET" "$SDKROOT" "$SDKROOT" "$SDKROOT" > "${{ github.workspace }}/zigwrap/zigcxx"
+          elif [ "$ZIG_TARGET" = "wasm64-wasi" ]; then
+            ZIG_LIB_DIR="$("$ZIG" env | sed -n 's/.*"lib_dir":[[:space:]]*"\([^"]*\)".*/\1/p')"
+            if [ -z "$ZIG_LIB_DIR" ]; then
+              ZIG_LIB_DIR="$(dirname "$ZIG")/lib"
+            fi
+            API_H="$ZIG_LIB_DIR/libc/include/wasm-wasi-musl/wasi/api.h"
+            sed -i 's/#ifdef __wasm32__/#if defined(__wasm32__) || defined(__wasm64__)/g' "$API_H"
+            sed -i 's/_Static_assert(sizeof(void \*) == 4, "witx calculated size");/_Static_assert(sizeof(void *) == 4 || sizeof(void *) == 8, "witx calculated size");/g' "$API_H"
+            sed -i 's/_Static_assert(_Alignof(void \*) == 4, "witx calculated align");/_Static_assert(_Alignof(void *) == 4 || _Alignof(void *) == 8, "witx calculated align");/g' "$API_H"
+            sed -i 's/_Static_assert(sizeof(__wasi_size_t) == 4, "witx calculated size");/_Static_assert(sizeof(__wasi_size_t) == sizeof(void *), "witx calculated size");/g' "$API_H"
+            sed -i 's/_Static_assert(_Alignof(__wasi_size_t) == 4, "witx calculated align");/_Static_assert(_Alignof(__wasi_size_t) == _Alignof(void *), "witx calculated align");/g' "$API_H"
+            sed -i 's/_Static_assert(sizeof(__wasi_iovec_t) == 8, "witx calculated size");/_Static_assert(sizeof(__wasi_iovec_t) == 2 * sizeof(void *), "witx calculated size");/g' "$API_H"
+            sed -i 's/_Static_assert(_Alignof(__wasi_iovec_t) == 4, "witx calculated align");/_Static_assert(_Alignof(__wasi_iovec_t) == _Alignof(void *), "witx calculated align");/g' "$API_H"
+            sed -i 's/_Static_assert(offsetof(__wasi_iovec_t, buf_len) == 4, "witx calculated offset");/_Static_assert(offsetof(__wasi_iovec_t, buf_len) == sizeof(void *), "witx calculated offset");/g' "$API_H"
+            sed -i 's/_Static_assert(sizeof(__wasi_ciovec_t) == 8, "witx calculated size");/_Static_assert(sizeof(__wasi_ciovec_t) == 2 * sizeof(void *), "witx calculated size");/g' "$API_H"
+            sed -i 's/_Static_assert(_Alignof(__wasi_ciovec_t) == 4, "witx calculated align");/_Static_assert(_Alignof(__wasi_ciovec_t) == _Alignof(void *), "witx calculated align");/g' "$API_H"
+            sed -i 's/_Static_assert(offsetof(__wasi_ciovec_t, buf_len) == 4, "witx calculated offset");/_Static_assert(offsetof(__wasi_ciovec_t, buf_len) == sizeof(void *), "witx calculated offset");/g' "$API_H"
+            sed -i 's/_Static_assert(sizeof(__wasi_prestat_dir_t) == 4, "witx calculated size");/_Static_assert(sizeof(__wasi_prestat_dir_t) == sizeof(void *), "witx calculated size");/g' "$API_H"
+            sed -i 's/_Static_assert(_Alignof(__wasi_prestat_dir_t) == 4, "witx calculated align");/_Static_assert(_Alignof(__wasi_prestat_dir_t) == _Alignof(void *), "witx calculated align");/g' "$API_H"
+            sed -i 's/_Static_assert(sizeof(__wasi_prestat_t) == 8, "witx calculated size");/_Static_assert(sizeof(__wasi_prestat_t) == 2 * sizeof(void *), "witx calculated size");/g' "$API_H"
+            sed -i 's/_Static_assert(_Alignof(__wasi_prestat_t) == 4, "witx calculated align");/_Static_assert(_Alignof(__wasi_prestat_t) == _Alignof(void *), "witx calculated align");/g' "$API_H"
+            sed -i 's/_Static_assert(offsetof(__wasi_prestat_t, u) == 4, "witx calculated offset");/_Static_assert(offsetof(__wasi_prestat_t, u) == sizeof(void *), "witx calculated offset");/g' "$API_H"
+            WASI_FLAGS="-isystem \"$ZIG_LIB_DIR/libc/include/wasm-wasi-musl\" -isystem \"$ZIG_LIB_DIR/libc/include/generic-musl\" -D_LIBCPP_HAS_MUSL_LIBC -D_WASI_EMULATED_MMAN -D_WASI_EMULATED_SIGNAL -D_WASI_EMULATED_PROCESS_CLOCKS -D_WASI_EMULATED_GETPID"
+            printf '#!/bin/sh\nexec "%s" cc -target %s %s "$@"\n' "$ZIG" "$ZIG_TARGET" "$WASI_FLAGS" > "${{ github.workspace }}/zigwrap/zigcc"
+            printf '#!/bin/sh\nexec "%s" c++ -target %s %s "$@"\n' "$ZIG" "$ZIG_TARGET" "$WASI_FLAGS" > "${{ github.workspace }}/zigwrap/zigcxx"
+            printf '#!/bin/sh\nexec "%s" ar "$@"\n' "$ZIG" > "${{ github.workspace }}/zigwrap/zigar"
+            printf '#!/bin/sh\nexec "%s" ranlib "$@"\n' "$ZIG" > "${{ github.workspace }}/zigwrap/zigranlib"
+            chmod +x "${{ github.workspace }}/zigwrap/zigar" "${{ github.workspace }}/zigwrap/zigranlib"
           elif [ -n "$ZIG_TARGET" ]; then
             printf '#!/bin/sh\nexec "%s" cc -target %s "$@"\n' "$ZIG" "$ZIG_TARGET" > "${{ github.workspace }}/zigwrap/zigcc"
             printf '#!/bin/sh\nexec "%s" c++ -target %s "$@"\n' "$ZIG" "$ZIG_TARGET" > "${{ github.workspace }}/zigwrap/zigcxx"
@@ -371,7 +453,7 @@ jobs:
         run: cmake --install build --config ${{ env.CMAKE_BUILD_TYPE }}
 
       - name: Stage LLVM tools archive
-        if: steps.filter.outputs.skip != 'true' && runner.os == 'Linux'
+        if: steps.filter.outputs.skip != 'true' && runner.os == 'Linux' && matrix.target != 'wasm64-wasi'
         shell: bash
         run: |
           TOOLS_DIR="${{ steps.names.outputs.tools_name }}"
@@ -510,8 +592,8 @@ jobs:
           # Compile it with the same zig cc wrapper to match the target arch.
           echo 'int _llvm_zig_stub(void) { return 0; }' > _stub.c
           "${{ github.workspace }}/zigwrap/zigcc" -c _stub.c -o _stub.o
-          ar rcs libz.a _stub.o
-          ar rcs libzstd.a _stub.o
+          "$ZIG" ar rcs libz.a _stub.o
+          "$ZIG" ar rcs libzstd.a _stub.o
           rm -f _stub.c _stub.o
 
       - name: Create stub z and zstd libs (Windows)
@@ -526,7 +608,7 @@ jobs:
           Remove-Item empty.c, empty.obj
 
       - name: Verify required tool binaries (Unix)
-        if: steps.filter.outputs.skip != 'true' && runner.os != 'Windows'
+        if: steps.filter.outputs.skip != 'true' && runner.os != 'Windows' && matrix.target != 'wasm64-wasi'
         shell: bash
         run: |
           cd install/bin
@@ -566,7 +648,7 @@ jobs:
           Write-Host "All required tool binaries present: $($required -join ' ')"
 
       - name: Create LLVM tools archive
-        if: steps.filter.outputs.skip != 'true' && runner.os == 'Linux'
+        if: steps.filter.outputs.skip != 'true' && runner.os == 'Linux' && matrix.target != 'wasm64-wasi'
         env:
           XZ_OPT: "-T0"
         shell: bash
@@ -595,7 +677,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Verify LLVM tools archive in clean Ubuntu
-        if: steps.filter.outputs.skip != 'true' && runner.os == 'Linux'
+        if: steps.filter.outputs.skip != 'true' && runner.os == 'Linux' && matrix.target != 'wasm64-wasi'
         shell: bash
         run: |
           TOOLS_NAME="${{ steps.names.outputs.tools_name }}"
@@ -676,7 +758,7 @@ jobs:
           retention-days: 1
 
       - name: Upload LLVM tools artifact
-        if: steps.filter.outputs.skip != 'true' && runner.os == 'Linux'
+        if: steps.filter.outputs.skip != 'true' && runner.os == 'Linux' && matrix.target != 'wasm64-wasi'
         uses: actions/upload-artifact@v4
         with:
           name: ${{ steps.names.outputs.tools_name }}
