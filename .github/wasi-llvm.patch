@@ -1,43 +1,5 @@
-From 97196c8eeb1d495fa43bb8af2fb26af5ef5b89fb Mon Sep 17 00:00:00 2001
-From: Catherine <whitequark@whitequark.org>
-Date: Sun, 19 May 2024 04:41:27 +0000
-Subject: [PATCH] Conditionalize use of POSIX features missing on
- WASI/WebAssembly.
-
-This patch makes it possible to build LLVM, Clang, and LLD for
-WASI/WebAssembly. This patch introduces conditionals of the form
-`defined(__wasi__)` or `defined(__wasm__)` wherever necessary to detect
-the use of the WASI platform. In addition, it introduces a `HAVE_SETJMP`
-feature test macro because the WASI platform can have or lack support
-for this feature depending on compiler options.
----
- clang/include/clang/Support/Compiler.h        |  2 +-
- clang/lib/Driver/Driver.cpp                   |  2 +-
- libcxx/src/filesystem/operations.cpp          |  2 +-
- lld/Common/Filesystem.cpp                     |  2 +-
- llvm/cmake/config-ix.cmake                    |  1 +
- llvm/cmake/modules/HandleLLVMOptions.cmake    |  4 ++
- llvm/include/llvm/ADT/bit.h                   |  3 +-
- llvm/include/llvm/Config/config.h.cmake       |  4 ++
- llvm/include/llvm/Support/Compiler.h          |  2 +-
- .../Interpreter/ExternalFunctions.cpp         |  6 +++
- llvm/lib/Support/CrashRecoveryContext.cpp     | 30 ++++++++++++--
- llvm/lib/Support/InitLLVM.cpp                 |  2 +
- llvm/lib/Support/Jobserver.cpp                |  3 +-
- llvm/lib/Support/LockFileManager.cpp          |  4 +-
- llvm/lib/Support/ProgramStack.cpp             |  4 +-
- llvm/lib/Support/Signals.cpp                  | 16 ++++++--
- llvm/lib/Support/Unix/Memory.inc              |  5 +++
- llvm/lib/Support/Unix/Path.inc                | 41 +++++++++++++++++--
- llvm/lib/Support/Unix/Process.inc             | 24 +++++++++--
- llvm/lib/Support/Unix/Program.inc             | 25 +++++++++--
- llvm/lib/Support/Unix/Unix.h                  |  3 ++
- llvm/lib/Support/Unix/Watchdog.inc            |  4 +-
- llvm/lib/Support/raw_socket_stream.cpp        |  4 ++
- 23 files changed, 163 insertions(+), 30 deletions(-)
-
 diff --git a/clang/include/clang/Support/Compiler.h b/clang/include/clang/Support/Compiler.h
-index e1ae3eda4ccc24..477d1045b4bdd7 100644
+index e1ae3eda4..477d1045b 100644
 --- a/clang/include/clang/Support/Compiler.h
 +++ b/clang/include/clang/Support/Compiler.h
 @@ -54,7 +54,7 @@
@@ -50,7 +12,7 @@ index e1ae3eda4ccc24..477d1045b4bdd7 100644
  #define CLANG_TEMPLATE_ABI
  #define CLANG_EXPORT_TEMPLATE
 diff --git a/clang/lib/Driver/Driver.cpp b/clang/lib/Driver/Driver.cpp
-index eb3f9cbea2845a..1c37da481b1405 100644
+index eb3f9cbea..1c37da481 100644
 --- a/clang/lib/Driver/Driver.cpp
 +++ b/clang/lib/Driver/Driver.cpp
 @@ -1859,7 +1859,7 @@ bool Driver::getCrashDiagnosticFile(StringRef ReproCrashFilename,
@@ -63,7 +25,7 @@ index eb3f9cbea2845a..1c37da481b1405 100644
  #else
        0;
 diff --git a/libcxx/src/filesystem/operations.cpp b/libcxx/src/filesystem/operations.cpp
-index 745db87ce3736e..fe180abbc75d45 100644
+index 745db87ce..fe180abbc 100644
 --- a/libcxx/src/filesystem/operations.cpp
 +++ b/libcxx/src/filesystem/operations.cpp
 @@ -41,7 +41,7 @@
@@ -76,7 +38,7 @@ index 745db87ce3736e..fe180abbc75d45 100644
  #endif
  
 diff --git a/lld/Common/Filesystem.cpp b/lld/Common/Filesystem.cpp
-index c2d3644191c9f4..c2c97c482ec168 100644
+index c2d364419..c2c97c482 100644
 --- a/lld/Common/Filesystem.cpp
 +++ b/lld/Common/Filesystem.cpp
 @@ -75,7 +75,7 @@ void lld::unlinkAsync(StringRef path) {
@@ -89,7 +51,7 @@ index c2d3644191c9f4..c2c97c482ec168 100644
      return;
  
 diff --git a/llvm/cmake/config-ix.cmake b/llvm/cmake/config-ix.cmake
-index ed2bfa6df68f4c..34d7ab8d98b72b 100644
+index ed2bfa6df..34d7ab8d9 100644
 --- a/llvm/cmake/config-ix.cmake
 +++ b/llvm/cmake/config-ix.cmake
 @@ -381,6 +381,7 @@ check_symbol_exists(malloc_zone_statistics malloc/malloc.h
@@ -101,7 +63,7 @@ index ed2bfa6df68f4c..34d7ab8d98b72b 100644
  check_symbol_exists(strerror_s string.h HAVE_DECL_STRERROR_S)
  check_symbol_exists(setenv stdlib.h HAVE_SETENV)
 diff --git a/llvm/cmake/modules/HandleLLVMOptions.cmake b/llvm/cmake/modules/HandleLLVMOptions.cmake
-index 311123084bf587..4fba9bf5bdc088 100644
+index 311123084..4fba9bf5b 100644
 --- a/llvm/cmake/modules/HandleLLVMOptions.cmake
 +++ b/llvm/cmake/modules/HandleLLVMOptions.cmake
 @@ -242,6 +242,10 @@ elseif(FUCHSIA OR UNIX OR CYGWIN)
@@ -116,7 +78,7 @@ index 311123084bf587..4fba9bf5bdc088 100644
    set(LLVM_ON_UNIX 0)
    set(LLVM_HAVE_LINK_VERSION_SCRIPT 0)
 diff --git a/llvm/include/llvm/ADT/bit.h b/llvm/include/llvm/ADT/bit.h
-index 5971b75045b6b5..3edf49d018dfb9 100644
+index 5971b7504..3edf49d01 100644
 --- a/llvm/include/llvm/ADT/bit.h
 +++ b/llvm/include/llvm/ADT/bit.h
 @@ -30,7 +30,8 @@
@@ -130,7 +92,7 @@ index 5971b75045b6b5..3edf49d018dfb9 100644
  #elif defined(_AIX)
  #include <sys/machine.h>
 diff --git a/llvm/include/llvm/Config/config.h.cmake b/llvm/include/llvm/Config/config.h.cmake
-index ce83de8e4cba9c..15e5026d0317f5 100644
+index ce83de8e4..15e5026d0 100644
 --- a/llvm/include/llvm/Config/config.h.cmake
 +++ b/llvm/include/llvm/Config/config.h.cmake
 @@ -149,6 +149,10 @@
@@ -145,7 +107,7 @@ index ce83de8e4cba9c..15e5026d0317f5 100644
  #cmakedefine HAVE_SETENV ${HAVE_SETENV}
  
 diff --git a/llvm/include/llvm/Support/Compiler.h b/llvm/include/llvm/Support/Compiler.h
-index 56f498a36ae524..141b0b501a6464 100644
+index 56f498a36..141b0b501 100644
 --- a/llvm/include/llvm/Support/Compiler.h
 +++ b/llvm/include/llvm/Support/Compiler.h
 @@ -201,7 +201,7 @@
@@ -158,7 +120,7 @@ index 56f498a36ae524..141b0b501a6464 100644
  #define LLVM_TEMPLATE_ABI
  #define LLVM_EXPORT_TEMPLATE
 diff --git a/llvm/lib/ExecutionEngine/Interpreter/ExternalFunctions.cpp b/llvm/lib/ExecutionEngine/Interpreter/ExternalFunctions.cpp
-index 9fe74898170a59..5c8b94e445cb27 100644
+index 9fe748981..5c8b94e44 100644
 --- a/llvm/lib/ExecutionEngine/Interpreter/ExternalFunctions.cpp
 +++ b/llvm/lib/ExecutionEngine/Interpreter/ExternalFunctions.cpp
 @@ -34,7 +34,9 @@
@@ -184,7 +146,7 @@ index 9fe74898170a59..5c8b94e445cb27 100644
  }
  
 diff --git a/llvm/lib/Support/CrashRecoveryContext.cpp b/llvm/lib/Support/CrashRecoveryContext.cpp
-index 1ba0c2383daec2..75792fed2ed7cc 100644
+index 1ba0c2383..75792fed2 100644
 --- a/llvm/lib/Support/CrashRecoveryContext.cpp
 +++ b/llvm/lib/Support/CrashRecoveryContext.cpp
 @@ -13,8 +13,15 @@
@@ -213,7 +175,7 @@ index 1ba0c2383daec2..75792fed2ed7cc 100644
    volatile unsigned Failed : 1;
    unsigned SwitchedThread : 1;
    unsigned ValidJumpBuffer : 1;
-@@ -50,9 +59,7 @@ struct CrashRecoveryContextImpl {
+@@ -50,9 +59,7 @@ public:
    /// Called when the separate crash-recovery thread was finished, to
    /// indicate that we don't need to clear the thread-local CurrentContext.
    void setSwitchedThread() {
@@ -223,7 +185,7 @@ index 1ba0c2383daec2..75792fed2ed7cc 100644
    }
  
    // If the function ran by the CrashRecoveryContext crashes or fails, then
-@@ -72,9 +79,11 @@ struct CrashRecoveryContextImpl {
+@@ -72,9 +79,11 @@ public:
  
      CRC->RetCode = RetCode;
  
@@ -278,7 +240,7 @@ index 1ba0c2383daec2..75792fed2ed7cc 100644
  #else
    llvm::sys::unregisterHandlers();
 diff --git a/llvm/lib/Support/InitLLVM.cpp b/llvm/lib/Support/InitLLVM.cpp
-index b90f4e07144581..f7ad767c100146 100644
+index b90f4e071..f7ad767c1 100644
 --- a/llvm/lib/Support/InitLLVM.cpp
 +++ b/llvm/lib/Support/InitLLVM.cpp
 @@ -83,6 +83,7 @@ InitLLVM::InitLLVM(int &Argc, const char **&Argv,
@@ -298,10 +260,10 @@ index b90f4e07144581..f7ad767c100146 100644
  #ifdef __MVS__
  
 diff --git a/llvm/lib/Support/Jobserver.cpp b/llvm/lib/Support/Jobserver.cpp
-index 9f726eb37506f7..090fe83b23fb45 100644
+index 9f726eb37..090fe83b2 100644
 --- a/llvm/lib/Support/Jobserver.cpp
 +++ b/llvm/lib/Support/Jobserver.cpp
-@@ -171,7 +171,7 @@ class JobserverClientImpl : public JobserverClient {
+@@ -171,7 +171,7 @@ private:
  } // namespace llvm
  
  // Include the platform-specific parts of the class.
@@ -319,7 +281,7 @@ index 9f726eb37506f7..090fe83b23fb45 100644
  
  namespace llvm {
 diff --git a/llvm/lib/Support/LockFileManager.cpp b/llvm/lib/Support/LockFileManager.cpp
-index 0891ef980668b7..f25c0e3b1e2eef 100644
+index 0891ef980..f25c0e3b1 100644
 --- a/llvm/lib/Support/LockFileManager.cpp
 +++ b/llvm/lib/Support/LockFileManager.cpp
 @@ -95,7 +95,7 @@ static std::error_code getHostID(SmallVectorImpl<char> &HostID) {
@@ -341,7 +303,7 @@ index 0891ef980668b7..f25c0e3b1e2eef 100644
    if (getHostID(StoredHostID))
      return true; // Conservatively assume it's executing on error.
 diff --git a/llvm/lib/Support/ProgramStack.cpp b/llvm/lib/Support/ProgramStack.cpp
-index 66f74ff660b202..a9e295e128be77 100644
+index 66f74ff66..a9e295e12 100644
 --- a/llvm/lib/Support/ProgramStack.cpp
 +++ b/llvm/lib/Support/ProgramStack.cpp
 @@ -10,7 +10,7 @@
@@ -363,17 +325,26 @@ index 66f74ff660b202..a9e295e128be77 100644
    getrlimit(RLIMIT_STACK, &RL);
    return RL.rlim_cur;
 diff --git a/llvm/lib/Support/Signals.cpp b/llvm/lib/Support/Signals.cpp
-index f160a135f623d3..b7cbc618388960 100644
+index f160a135f..751c369d9 100644
 --- a/llvm/lib/Support/Signals.cpp
 +++ b/llvm/lib/Support/Signals.cpp
-@@ -353,9 +353,28 @@ static bool printMarkupStackTrace(StringRef Argv0, void **StackTrace, int Depth,
+@@ -353,9 +353,37 @@ static bool printMarkupStackTrace(StringRef Argv0, void **StackTrace, int Depth,
  }
  
  // Include the platform-specific parts of this class.
 -#ifdef LLVM_ON_UNIX
 +#if defined(__wasi__)
 +// WASI does not have signals.
-+void llvm::sys::RunSignalHandlers() {}
++static bool findModulesAndOffsets(void **StackTrace, int Depth,
++                                  const char **Modules, intptr_t *Offsets,
++                                  const char *MainExecutableName,
++                                  StringSaver &StrPool) {
++  return false;
++}
++static bool printMarkupContext(raw_ostream &OS,
++                               const char *MainExecutableName) {
++  return false;
++}
 +void llvm::sys::AddSignalHandler(sys::SignalHandlerCallback FnPtr,
 +                                 void *Cookie) {}
 +void llvm::sys::SetInterruptFunction(void (*IF)()) {}
@@ -399,7 +370,7 @@ index f160a135f623d3..b7cbc618388960 100644
  #include "Windows/Signals.inc"
  #endif
 diff --git a/llvm/lib/Support/Unix/Memory.inc b/llvm/lib/Support/Unix/Memory.inc
-index bac208a7d543ca..2fa9db84c9774b 100644
+index bac208a7d..2fa9db84c 100644
 --- a/llvm/lib/Support/Unix/Memory.inc
 +++ b/llvm/lib/Support/Unix/Memory.inc
 @@ -163,6 +163,11 @@ std::error_code Memory::releaseMappedMemory(MemoryBlock &M) {
@@ -415,7 +386,7 @@ index bac208a7d543ca..2fa9db84c9774b 100644
    if (M.Address == nullptr || M.AllocatedSize == 0)
      return std::error_code();
 diff --git a/llvm/lib/Support/Unix/Path.inc b/llvm/lib/Support/Unix/Path.inc
-index fc71ca46d823a5..d1c57e324871ba 100644
+index fc71ca46d..d1c57e324 100644
 --- a/llvm/lib/Support/Unix/Path.inc
 +++ b/llvm/lib/Support/Unix/Path.inc
 @@ -31,7 +31,9 @@
@@ -589,7 +560,7 @@ index fc71ca46d823a5..d1c57e324871ba 100644
      return false;
  
 diff --git a/llvm/lib/Support/Unix/Process.inc b/llvm/lib/Support/Unix/Process.inc
-index c6e79af44b9b45..1e6cb5f26edb74 100644
+index c6e79af44..80156ddb9 100644
 --- a/llvm/lib/Support/Unix/Process.inc
 +++ b/llvm/lib/Support/Unix/Process.inc
 @@ -19,9 +19,11 @@
@@ -666,7 +637,7 @@ index c6e79af44b9b45..1e6cb5f26edb74 100644
    // Create a signal set filled with *all* signals.
    sigset_t FullSet, SavedSet;
    if (sigfillset(&FullSet) < 0 || sigfillset(&SavedSet) < 0)
-@@ -284,6 +301,7 @@ std::error_code Process::SafelyCloseFileDescriptor(int FD) {
+@@ -284,6 +302,7 @@ std::error_code Process::SafelyCloseFileDescriptor(int FD) {
    if (ErrnoFromClose)
      return std::error_code(ErrnoFromClose, std::generic_category());
    return std::error_code(EC, std::generic_category());
@@ -674,7 +645,7 @@ index c6e79af44b9b45..1e6cb5f26edb74 100644
  }
  
  bool Process::StandardInIsUserInput() {
-@@ -320,7 +338,7 @@ static unsigned getColumns(int FileID) {
+@@ -320,7 +339,7 @@ static unsigned getColumns(int FileID) {
    // instead if it isn't available.
    unsigned Columns = 0;
  
@@ -684,7 +655,7 @@ index c6e79af44b9b45..1e6cb5f26edb74 100644
    if (ioctl(FileID, TIOCGWINSZ, &ws) == 0)
      Columns = ws.ws_col;
 diff --git a/llvm/lib/Support/Unix/Program.inc b/llvm/lib/Support/Unix/Program.inc
-index 489ca03b306706..06a24e5f545685 100644
+index 489ca03b3..105e0ca42 100644
 --- a/llvm/lib/Support/Unix/Program.inc
 +++ b/llvm/lib/Support/Unix/Program.inc
 @@ -27,9 +27,11 @@
@@ -778,17 +749,18 @@ index 489ca03b306706..06a24e5f545685 100644
  using ::wait4;
  #endif
  
-@@ -382,6 +397,9 @@ ProcessInfo llvm::sys::Wait(const ProcessInfo &PI,
+@@ -382,6 +397,10 @@ ProcessInfo llvm::sys::Wait(const ProcessInfo &PI,
                              std::string *ErrMsg,
                              std::optional<ProcessStatistics> *ProcStat,
                              bool Polling) {
 +#if defined(__wasi__)
 +  assert(false && "Unsupported");
++  return ProcessInfo();
 +#else
    struct sigaction Act, Old;
    assert(PI.Pid && "invalid pid to wait on, process not started?");
  
-@@ -499,6 +517,7 @@ ProcessInfo llvm::sys::Wait(const ProcessInfo &PI,
+@@ -499,6 +518,7 @@ ProcessInfo llvm::sys::Wait(const ProcessInfo &PI,
      WaitResult.ReturnCode = -2;
    }
    return WaitResult;
@@ -797,7 +769,7 @@ index 489ca03b306706..06a24e5f545685 100644
  
  std::error_code llvm::sys::ChangeStdinMode(fs::OpenFlags Flags) {
 diff --git a/llvm/lib/Support/Unix/Unix.h b/llvm/lib/Support/Unix/Unix.h
-index f24d524982b237..d83d8edb151fc6 100644
+index f24d52498..d83d8edb1 100644
 --- a/llvm/lib/Support/Unix/Unix.h
 +++ b/llvm/lib/Support/Unix/Unix.h
 @@ -29,7 +29,10 @@
@@ -812,7 +784,7 @@ index f24d524982b237..d83d8edb151fc6 100644
  #ifdef HAVE_UNISTD_H
  #include <unistd.h>
 diff --git a/llvm/lib/Support/Unix/Watchdog.inc b/llvm/lib/Support/Unix/Watchdog.inc
-index b33e52d88500d5..415a23ee097776 100644
+index b33e52d88..415a23ee0 100644
 --- a/llvm/lib/Support/Unix/Watchdog.inc
 +++ b/llvm/lib/Support/Unix/Watchdog.inc
 @@ -19,13 +19,13 @@
@@ -832,7 +804,7 @@ index b33e52d88500d5..415a23ee097776 100644
  #endif
  }
 diff --git a/llvm/lib/Support/raw_socket_stream.cpp b/llvm/lib/Support/raw_socket_stream.cpp
-index f71631730d0721..7f60c30caabe2f 100644
+index f71631730..7f60c30ca 100644
 --- a/llvm/lib/Support/raw_socket_stream.cpp
 +++ b/llvm/lib/Support/raw_socket_stream.cpp
 @@ -41,6 +41,8 @@
@@ -850,3 +822,16 @@ index f71631730d0721..7f60c30caabe2f 100644
  }
 +
 +#endif
+diff --git a/llvm/lib/Target/X86/X86ISelDAGToDAG.cpp b/llvm/lib/Target/X86/X86ISelDAGToDAG.cpp
+index ab608806e..a093da631 100644
+--- a/llvm/lib/Target/X86/X86ISelDAGToDAG.cpp
++++ b/llvm/lib/Target/X86/X86ISelDAGToDAG.cpp
+@@ -2555,7 +2555,7 @@ bool X86DAGToDAGISel::matchAddressRecursively(SDValue N, X86ISelAddressMode &AM,
+   case ISD::FrameIndex:
+     if (AM.BaseType == X86ISelAddressMode::RegBase &&
+         AM.Base_Reg.getNode() == nullptr &&
+-        (!Subtarget->is64Bit() || isDispSafeForFrameIndexOrRegBase(AM.Disp))) {
++        isDispSafeForFrameIndexOrRegBase(AM.Disp)) {
+       AM.BaseType = X86ISelAddressMode::FrameIndexBase;
+       AM.Base_FrameIndex = cast<FrameIndexSDNode>(N)->getIndex();
+       return false;
